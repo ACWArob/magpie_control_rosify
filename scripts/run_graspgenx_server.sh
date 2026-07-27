@@ -20,14 +20,25 @@ set -e
 PORT="${1:-5557}"
 GRIPPER="${2:-magpie}"
 GGX_DIR="$HOME/GraspGenX"
-UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
-[ -x "$UV" ] || UV="$HOME/snap/code/247/.local/bin/uv"
-
 cd "$GGX_DIR"
 echo "Starting GraspGenX server: gripper=$GRIPPER port=$PORT"
 echo "  (first call per gripper lazily builds its caches; checkpoints already in ext/)"
+
+# Robust launch. PREFER GraspGenX's own venv python (immune to VS Code snap
+# version bumps — the old hardcoded snap/code/247/.local/bin/uv path went stale
+# when Code updated to 248/253, which is why the server silently failed to start).
+VENV_PY="$GGX_DIR/.venv/bin/python"
+if [ -x "$VENV_PY" ]; then
+    exec "$VENV_PY" client-server/graspgenx_server.py \
+        --config ext/graspgenx_checkpoints/release \
+        --assets_dir assets --default_gripper "$GRIPPER" --port "$PORT"
+fi
+
+# Fallback: find uv dynamically (any snap/code version, or a system install).
+UV="$(command -v uv || true)"
+[ -x "$UV" ] || UV="$(ls -dt "$HOME"/snap/code/*/.local/bin/uv 2>/dev/null | head -1)"
+[ -x "$UV" ] || UV="$HOME/.local/bin/uv"
+[ -x "$UV" ] || { echo "ERROR: no GraspGenX .venv and no uv found — cannot start server"; exit 1; }
 exec "$UV" run python client-server/graspgenx_server.py \
     --config ext/graspgenx_checkpoints/release \
-    --assets_dir assets \
-    --default_gripper "$GRIPPER" \
-    --port "$PORT"
+    --assets_dir assets --default_gripper "$GRIPPER" --port "$PORT"
