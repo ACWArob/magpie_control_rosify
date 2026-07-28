@@ -404,7 +404,17 @@ class VLARecorder:
             why = ('no frames captured' if n == 0
                    else 'object DROPPED' if not success
                    else f'reward {float(reward):.2f} < gate {threshold}')
-            print(f'  [VLA] episode NOT saved ({why}) — logged to attempts_log only')
+            # Keep the FULL failed episode (frames + trajectory) so it's recoverable
+            # for review/relabel — the trainable dataset stays clean, failures go to a
+            # separate <name>_failed/ dir. (Previously the frames were discarded.)
+            if n > 0:
+                try:
+                    _fp = self._save_failed_episode(rec, why)
+                    print(f'  [VLA] NOT trained ({why}) — full data KEPT at {_fp}')
+                except Exception as _fe:
+                    print(f'  [VLA] NOT trained ({why}); failed-data dump skipped: {_fe}')
+            else:
+                print(f'  [VLA] episode NOT saved ({why}) — no frames')
             self._buf = []
             return False
 
@@ -422,6 +432,25 @@ class VLARecorder:
               f'task="{self._task}"')
         self._buf = []
         return True
+
+    def _save_failed_episode(self, rec, why):
+        """Dump a FAILED episode's full frames + trajectory so it's recoverable.
+        Writes <name>_failed/<ts>_<task>.mp4 (wrist video) + .json (states/actions/
+        metadata). Keeps the trainable dataset clean while losing nothing."""
+        import cv2, json as _j, time as _t
+        d = self.root.parent / f'{self.root.name}_failed'
+        d.mkdir(parents=True, exist_ok=True)
+        stem = str(d / f"{_t.strftime('%Y%m%d_%H%M%S')}_{(self._task or 'obj')[:20].replace(' ', '_')}")
+        h, w = self._buf[0][0].shape[:2]
+        vw = cv2.VideoWriter(stem + '.mp4', cv2.VideoWriter_fourcc(*'mp4v'), self.fps, (w, h))
+        traj = []
+        for img, st, ac in self._buf:
+            vw.write(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+            traj.append({'state': [float(x) for x in st], 'action': [float(x) for x in ac]})
+        vw.release()
+        meta = dict(rec); meta['reason'] = why
+        _j.dump({'meta': meta, 'trajectory': traj}, open(stem + '.json', 'w'))
+        return stem + '.mp4'
 
     def flush_episode(self):
         """Close the current episode's parquet/video writers so the file is immediately
