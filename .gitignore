@@ -10,3 +10,6 @@ data/
 *.rrd
 *.tar
 models/
+
+# stray archives
+*.zip
