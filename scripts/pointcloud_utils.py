@@ -308,10 +308,12 @@ def smart_grasp_angle(pca_result, object_name='', image_rgb=None,
     """
     Compute the best grasp angle using shape geometry + optional Gemini classification.
 
-    Three strategies:
-      symmetric  — cube/ball: use mask PCA angle (grips nearest flat face)
-      short_side — rectangle/book: grip perpendicular to long axis
-      long_side  — pen/banana: grip parallel to long axis
+    All strategies grip ACROSS the narrow width (perpendicular to the long axis). The
+    ANGLE comes from analyse_pcd's WORLD cloud angle for elongated objects (frame-correct,
+    accounts for the camera clock); flat symmetric objects fall back to the 2D mask angle.
+      symmetric  — cube/ball: any angle works (grips nearest flat face)
+      short_side — rectangle/book/pen: grip perpendicular to the long axis
+      long_side  — kept for compatibility (label only; also grips across)
 
     Steps:
       1. Geometry rule: if major/minor < 1.3 → symmetric
@@ -325,14 +327,23 @@ def smart_grasp_angle(pca_result, object_name='', image_rgb=None,
     major = pca_result['extent_m'][0]
     minor = pca_result['extent_m'][1]
     ratio = major / max(minor, 1e-6)
-    pca_angle = pca_result['grasp_angle_deg']
+    # analyse_pcd's grasp_angle_deg is the WORLD across-grasp (perpendicular to the
+    # major axis). Its cloud is built with the full camera transform, so it already
+    # accounts for the Rz(-90) camera mounting clock — the SAME world frame the wrist
+    # / grasp_rotation_matrix use. This is the frame-correct angle for elongated objects.
+    cloud_angle = pca_result['grasp_angle_deg']
 
-    # Use mask-based 2D PCA angle when available — avoids IR stripe artifacts
+    # Mask 2D PCA gives a clean RATIO (no IR stripe artifacts) and a fallback angle for
+    # flat SYMMETRIC objects whose 3D PCA is stripe-degenerate. CAUTION: mask_grasp_angle
+    # is in the raw CAMERA-IMAGE frame and does NOT apply the camera clock, so it is ~90°
+    # off from world (measured -88.5° on real screwdriver/tube clouds). It must NOT drive
+    # the angle of an elongated object — doing so was the "long objects grip end-to-end"
+    # bug. Use it only for the ratio and the symmetric fallback.
+    mask_angle = None
     if mask is not None:
         mask_angle, mask_ratio = mask_grasp_angle(mask)
-        pca_angle = mask_angle
         if ratio < 1.3:
-            ratio = mask_ratio   # also update ratio from cleaner mask data
+            ratio = mask_ratio   # cleaner ratio for near-symmetric shapes
 
     # ── 1. Geometry default ───────────────────────────────────────────────────
     # If extents are too small the point cloud is noise (e.g. IR-opaque object
@@ -379,16 +390,21 @@ def smart_grasp_angle(pca_result, object_name='', image_rgb=None,
             reason += f' [gemini failed: {e}]'
 
     # ── 3. Apply strategy ─────────────────────────────────────────────────────
-    # pca_angle already has +90° built in (analyse_pcd adds π/2 to major axis angle).
-    # Empirically: pca_angle grips the SHORT faces; pca_angle+90° grips the LONG faces.
+    # ROOT-CAUSE FIX (2026-07-28, proven on real screwdriver/tube clouds): long
+    # objects gripped end-to-end because the elongated branch drove the wrist with the
+    # MASK angle (raw image frame, measured ~89° off world) instead of analyse_pcd's
+    # world-correct angle — and a downstream min(ang,90) clamp then mangled the rest.
+    # analyse_pcd's cloud_angle IS the across-the-width WORLD grasp (perpendicular to
+    # the major axis), so trust it for elongated objects. For a flat SYMMETRIC object
+    # the 3D PCA is stripe-degenerate, so fall back to the 2D mask (its exact angle
+    # barely matters — any face works — and the notebook's flat-face snap, which DOES
+    # apply the camera clock, refines it).
     if strategy == 'symmetric':
-        angle = pca_angle   # use PCA even for cubes — grips nearest flat face
-    elif strategy == 'short_side':
-        angle = (pca_angle + 90.) % 180.   # grip across short dim → contact long faces
-    else:  # long_side
-        angle = pca_angle                   # grip across long dim → contact short faces
+        angle = mask_angle if mask_angle is not None else cloud_angle
+    else:  # short_side / long_side — elongated: world cloud angle = grip ACROSS
+        angle = cloud_angle
 
-    angle = float(angle) % 180.  # half-turn normalise; caller clips to [0,90] wrist range
+    angle = float(angle) % 180.  # normalise; the notebook wraps to [-90,90] (keeps direction)
     return angle, strategy, reason
 
 
