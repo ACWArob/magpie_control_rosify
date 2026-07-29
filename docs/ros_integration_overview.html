@@ -1,0 +1,455 @@
+<!--
+  docs/ros_integration_overview.html
+  WHAT THIS IS: a one-page visual overview of the ROS 2 integration in this PR —
+                the old single-script control stack vs. the new node graph, what each
+                node/file contributes, and how one grasp flows end-to-end.
+  WHY IT'S HERE: to make the PR reviewable at a glance. The code and PROCEDURE.md have
+                the detail; this page is the map that shows how the pieces fit together
+                before you read them. Open it in any browser — it is self-contained.
+-->
+<title>ROS 2 Integration — Before / After</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --panel-2: #eef1f4;
+    --ink: #14181d;
+    --ink-2: #4a5560;
+    --ink-3: #7c8894;
+    --line: #d9dee3;
+    --line-strong: #c2cad2;
+    /* semantic layers — these carry meaning, not decoration */
+    --ros: #0e8f86;      /* software / ROS layer */
+    --ros-soft: #d6efec;
+    --hw: #c1740b;       /* hardware / driver layer */
+    --hw-soft: #f6e7cf;
+    --danger: #c0392b;
+    --shadow: 0 1px 2px rgba(20,24,29,.06), 0 8px 24px rgba(20,24,29,.06);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1013;
+      --panel: #14181d;
+      --panel-2: #1b2027;
+      --ink: #eef2f5;
+      --ink-2: #a9b4bf;
+      --ink-3: #6d7883;
+      --line: #262d35;
+      --line-strong: #333c46;
+      --ros: #34d3c6;
+      --ros-soft: #0f2b29;
+      --hw: #e8a54a;
+      --hw-soft: #2c2313;
+      --danger: #e5715f;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6f8; --panel: #ffffff; --panel-2: #eef1f4; --ink: #14181d;
+    --ink-2: #4a5560; --ink-3: #7c8894; --line: #d9dee3; --line-strong: #c2cad2;
+    --ros: #0e8f86; --ros-soft: #d6efec; --hw: #c1740b; --hw-soft: #f6e7cf;
+    --danger: #c0392b; --shadow: 0 1px 2px rgba(20,24,29,.06), 0 8px 24px rgba(20,24,29,.06);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1013; --panel: #14181d; --panel-2: #1b2027; --ink: #eef2f5;
+    --ink-2: #a9b4bf; --ink-3: #6d7883; --line: #262d35; --line-strong: #333c46;
+    --ros: #34d3c6; --ros-soft: #0f2b29; --hw: #e8a54a; --hw-soft: #2c2313;
+    --danger: #e5715f; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  /* ---- header ---- */
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ros); font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before {
+    content: ""; width: 26px; height: 2px; background: var(--ros); display: inline-block;
+  }
+  h1 {
+    font-size: clamp(30px, 5vw, 46px); line-height: 1.05; margin: 16px 0 12px;
+    letter-spacing: -.02em; text-wrap: balance; font-weight: 680;
+  }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin: 0; }
+  .meta {
+    margin-top: 22px; display: flex; flex-wrap: wrap; gap: 8px;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .meta span {
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink-2);
+    padding: 5px 10px; border-radius: 6px;
+  }
+
+  /* ---- section scaffolding ---- */
+  section { margin-top: 56px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; }
+  .sec-num {
+    font-family: var(--mono); font-size: 13px; color: var(--ink-3); font-weight: 600;
+  }
+  h2 { font-size: 24px; letter-spacing: -.01em; margin: 0; font-weight: 660; }
+  .sec-sub { color: var(--ink-2); margin: 4px 0 26px; max-width: 68ch; }
+
+  /* ---- before / after ---- */
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 760px) { .ba { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 22px; box-shadow: var(--shadow);
+  }
+  .panel-tag {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    font-weight: 600; display: inline-flex; align-items: center; gap: 7px; margin-bottom: 16px;
+  }
+  .panel-tag.before { color: var(--danger); }
+  .panel-tag.after { color: var(--ros); }
+  .panel-tag .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+  .mono-box {
+    font-family: var(--mono); font-size: 13px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px; color: var(--ink);
+  }
+  .monolith {
+    text-align: center; font-weight: 600; padding: 14px; border-radius: 8px;
+    background: var(--hw-soft); border: 1px solid var(--hw); color: var(--ink);
+    font-family: var(--mono); font-size: 13.5px;
+  }
+  .fan {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+  }
+  .fan div {
+    background: var(--panel-2); border: 1px dashed var(--line-strong); border-radius: 7px;
+    padding: 8px 10px;
+  }
+  .verdict { margin-top: 16px; font-size: 13.5px; color: var(--ink-2); }
+  .verdict strong { color: var(--ink); font-weight: 620; }
+  .verdict.bad strong { color: var(--danger); }
+  .verdict.good strong { color: var(--ros); }
+
+  /* after: three-lane bus */
+  .lanes { display: flex; flex-direction: column; gap: 9px; }
+  .lane {
+    display: grid; grid-template-columns: 96px 1fr; align-items: stretch; gap: 0;
+    border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+  }
+  .lane .hw-src {
+    background: var(--hw-soft); color: var(--hw); font-family: var(--mono);
+    font-size: 10.5px; font-weight: 600; padding: 8px; display: flex; align-items: center;
+    line-height: 1.25; border-right: 1px solid var(--line);
+  }
+  .lane .node {
+    padding: 8px 11px; background: var(--panel);
+  }
+  .lane .node .nm {
+    font-family: var(--mono); font-size: 12.5px; font-weight: 640; color: var(--ros);
+  }
+  .lane .node .tp {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 2px;
+    word-break: break-all;
+  }
+
+  /* ---- file cards ---- */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+    padding: 18px 18px 16px; box-shadow: var(--shadow); position: relative;
+    border-top: 3px solid var(--layer, var(--ros));
+  }
+  .card.hw { --layer: var(--hw); }
+  .card.sw { --layer: var(--ros); }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .fname { font-family: var(--mono); font-size: 14px; font-weight: 660; letter-spacing: -.01em; }
+  .role {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    font-weight: 600; padding: 3px 7px; border-radius: 5px; white-space: nowrap;
+  }
+  .card.hw .role { background: var(--hw-soft); color: var(--hw); }
+  .card.sw .role { background: var(--ros-soft); color: var(--ros); }
+  .card p { margin: 6px 0 12px; font-size: 13.5px; color: var(--ink-2); }
+  .io { display: flex; flex-direction: column; gap: 5px; }
+  .io-row { display: grid; grid-template-columns: 62px 1fr; gap: 8px; align-items: start; font-size: 12px; }
+  .io-k {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; padding-top: 2px;
+  }
+  .io-v { font-family: var(--mono); font-size: 11.5px; color: var(--ink); word-break: break-word; }
+  .io-v .sep { color: var(--ink-3); }
+
+  /* ---- pipeline ---- */
+  .flow { display: flex; flex-direction: column; gap: 0; }
+  .step { display: grid; grid-template-columns: 40px 1fr; gap: 16px; }
+  .rail { display: flex; flex-direction: column; align-items: center; }
+  .rail .num {
+    width: 30px; height: 30px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 13px; font-weight: 640;
+    background: var(--panel); color: var(--ink); border: 1.5px solid var(--line-strong);
+    z-index: 1;
+  }
+  .step.act .num { border-color: var(--ros); color: var(--ros); }
+  .rail .wire { width: 2px; flex: 1 1 auto; background: var(--line-strong); min-height: 18px; }
+  .step:last-child .rail .wire { display: none; }
+  .step .body { padding-bottom: 20px; }
+  .step .st-title { font-weight: 620; font-size: 15px; margin: 3px 0 3px; }
+  .step .st-desc { color: var(--ink-2); font-size: 13.5px; margin: 0 0 8px; }
+  .chan {
+    font-family: var(--mono); font-size: 11.5px; display: inline-flex; align-items: center;
+    gap: 6px; padding: 3px 9px; border-radius: 6px; background: var(--panel-2);
+    border: 1px solid var(--line); color: var(--ink);
+  }
+  .chan::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
+  .chan.ros::before { background: var(--ros); }
+  .chan.hw::before { background: var(--hw); }
+  .chan-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .legend {
+    display: flex; gap: 18px; flex-wrap: wrap; margin: 26px 0 0; font-size: 12.5px;
+    color: var(--ink-2); font-family: var(--mono);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  footer {
+    margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
+    font-size: 12.5px; color: var(--ink-3); font-family: var(--mono);
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">ROS 2 Humble · UR5 CB3 + MAGPIE</div>
+    <h1>From one script to a robot bus</h1>
+    <p class="lede">The control stack used to be a single Python program driving every piece of
+      hardware by hand. This PR breaks it into independent ROS 2 nodes that talk over named
+      topics, services, and actions — so any part can be swapped, watched, or driven on its own.</p>
+    <div class="meta">
+      <span>+1,811 / −36</span>
+      <span>8 files</span>
+      <span>5 nodes</span>
+      <span>merges clean</span>
+      <span>ros-integration → main</span>
+    </div>
+  </header>
+
+  <!-- BEFORE / AFTER -->
+  <section>
+    <div class="sec-head"><span class="sec-num">01</span><h2>What changed</h2></div>
+    <p class="sec-sub">Same hardware, same motion primitives. What moved is the <em>boundary</em>:
+      from one process that imports every driver, to processes that publish and subscribe.</p>
+
+    <div class="ba">
+      <div class="panel">
+        <div class="panel-tag before"><span class="dot"></span>Before — one monolith</div>
+        <div class="monolith">one control script</div>
+        <div class="fan">
+          <div>rtde_control → UR5</div>
+          <div>Dynamixel SDK → gripper</div>
+          <div>pyrealsense2 → camera</div>
+          <div>UDP socket → F/T</div>
+        </div>
+        <p class="verdict bad">One process holds every driver. <strong>No introspection</strong>,
+          nothing to subscribe to, and one crash takes the whole stack down. Hard to extend or
+          plug into RViz / MoveIt / a learned policy.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-tag after"><span class="dot"></span>After — ROS 2 node graph</div>
+        <div class="lanes">
+          <div class="lane">
+            <div class="hw-src">UR5 · RTDE</div>
+            <div class="node"><div class="nm">ur5_node</div><div class="tp">/arm/joint_states · /arm/tcp_pose · /arm/move_l …</div></div>
+          </div>
+          <div class="lane">
+            <div class="hw-src">gripper · serial</div>
+            <div class="node"><div class="nm">gripper_node</div><div class="tp">/gripper/state · /gripper/deligrasp [action] …</div></div>
+          </div>
+          <div class="lane">
+            <div class="hw-src">ATI · UDP</div>
+            <div class="node"><div class="nm">ft_sensor_node</div><div class="tp">/ft_sensor/wrench · /ft_sensor/zero</div></div>
+          </div>
+          <div class="lane">
+            <div class="hw-src">D405 · USB</div>
+            <div class="node"><div class="nm">realsense2_camera</div><div class="tp">/camera/gripper_camera/color · /depth · /camera_info</div></div>
+          </div>
+          <div class="lane">
+            <div class="hw-src" style="background:var(--ros-soft);color:var(--ros)">orchestrator</div>
+            <div class="node"><div class="nm">deligrasp_node</div><div class="tp">subscribes camera+arm → calls arm+gripper · /grasp/execute</div></div>
+          </div>
+        </div>
+        <p class="verdict good">Each node owns one device and exposes a <strong>named contract</strong>.
+          Watch any stream with <span style="font-family:var(--mono)">ros2 topic echo</span>, restart
+          one node without the others, and let downstream policies subscribe without touching drivers.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FILE CARDS -->
+  <section>
+    <div class="sec-head"><span class="sec-num">02</span><h2>What each file brings to the table</h2></div>
+    <p class="sec-sub">Four hardware nodes each wrap one existing driver class as a thin ROS shell.
+      One orchestrator node fuses them into a grasp. The rest is the contract and the wiring.</p>
+
+    <div class="grid">
+
+      <div class="card hw">
+        <div class="card-top"><span class="fname">gripper_node.py</span><span class="role">hardware node</span></div>
+        <p>Wraps the <span style="font-family:var(--mono)">Gripper</span> class (AX-12 servos over serial). Also fixes three real bugs found in review: an executor deadlock, an uncalibrated force→torque scaling, and blocking I/O in an async action.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Pub</span><span class="io-v">/gripper/state <span class="sep">@10 Hz</span></span></div>
+          <div class="io-row"><span class="io-k">Srv</span><span class="io-v">open · close · set_position · set_force · calibrate · clear_error</span></div>
+          <div class="io-row"><span class="io-k">Act</span><span class="io-v">/gripper/deligrasp <span class="sep">(force-controlled close)</span></span></div>
+        </div>
+      </div>
+
+      <div class="card hw">
+        <div class="card-top"><span class="fname">ur5_node.py</span><span class="role">hardware node</span></div>
+        <p>Wraps <span style="font-family:var(--mono)">UR5_Interface</span> over RTDE — no teach-pendant URCap needed. Converts UR axis-angle ↔ ROS quaternion on every message. Adds teach mode and high-rate servo streaming.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Pub</span><span class="io-v">/arm/joint_states · /arm/tcp_pose <span class="sep">@500 Hz</span></span></div>
+          <div class="io-row"><span class="io-k">Srv</span><span class="io-v">move_j · move_l · get_pose · set_speed · move_safe · stop · teach_mode</span></div>
+          <div class="io-row"><span class="io-k">Sub</span><span class="io-v">/arm/servo_j_cmd · /arm/servo_l_cmd</span></div>
+        </div>
+      </div>
+
+      <div class="card hw">
+        <div class="card-top"><span class="fname">ft_sensor_node.py</span><span class="role">hardware node</span></div>
+        <p>Wraps the ATI Mini45 NetFT driver (a standalone sensor, not the wrist F/T). Streams the 6-axis wrench and can re-zero on command.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Pub</span><span class="io-v">/ft_sensor/wrench <span class="sep">@50 Hz</span></span></div>
+          <div class="io-row"><span class="io-k">Srv</span><span class="io-v">/ft_sensor/zero</span></div>
+        </div>
+      </div>
+
+      <div class="card hw">
+        <div class="card-top"><span class="fname">tactile_sensor_node.py</span><span class="role">stub</span></div>
+        <p>Placeholder ROS shell for the E-flesh tactile fingers. Disabled by default — kept so the launch graph and future driver have a home.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">State</span><span class="io-v">disabled (enable: false)</span></div>
+        </div>
+      </div>
+
+      <div class="card sw">
+        <div class="card-top"><span class="fname">deligrasp_node.py</span><span class="role">orchestrator</span></div>
+        <p>The brain. Subscribes to camera + arm pose, detects the target (Grounding DINO or OWL-ViT, optional LLM query), back-projects depth to a world point, then calls the arm and gripper to run the grasp. Uses a reentrant callback group so it can call services from inside its own callback.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Sub</span><span class="io-v">/camera/gripper_camera/* · /arm/tcp_pose</span></div>
+          <div class="io-row"><span class="io-k">Calls</span><span class="io-v">/arm/move_l · /gripper/open · /gripper/deligrasp</span></div>
+          <div class="io-row"><span class="io-k">Srv</span><span class="io-v">/grasp/execute <span class="sep">(one-shot trigger)</span></span></div>
+        </div>
+      </div>
+
+      <div class="card sw">
+        <div class="card-top"><span class="fname">magpie_msgs</span><span class="role">contract</span></div>
+        <p>Separate package of custom <span style="font-family:var(--mono)">.msg / .srv / .action</span> definitions (GripperState, MoveLinear, DeliGrasp…). Must build first — it's the shared language every node speaks.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Gives</span><span class="io-v">typed topics, services & actions</span></div>
+        </div>
+      </div>
+
+      <div class="card sw">
+        <div class="card-top"><span class="fname">config/gripper_config.yaml</span><span class="role">config</span></div>
+        <p>One file holding every node's parameters — IPs, ports, publish rates, detector choice, grasp forces. Change behaviour without touching code.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Sets</span><span class="io-v">robot_ip · publish_rate · detector_type · initial_force …</span></div>
+        </div>
+      </div>
+
+      <div class="card sw">
+        <div class="card-top"><span class="fname">launch/…launch.py</span><span class="role">wiring</span></div>
+        <p>Brings up all five nodes with the config applied, in one command. Camera launches alongside on the <span style="font-family:var(--mono)">gripper_camera</span> namespace.</p>
+        <div class="io">
+          <div class="io-row"><span class="io-k">Run</span><span class="io-v">ros2 launch magpie_control gripper_control.launch.py</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="legend">
+      <span><i style="background:var(--hw)"></i> hardware / driver layer</span>
+      <span><i style="background:var(--ros)"></i> software / ROS layer</span>
+    </div>
+  </section>
+
+  <!-- PIPELINE -->
+  <section>
+    <div class="sec-head"><span class="sec-num">03</span><h2>One grasp, end to end</h2></div>
+    <p class="sec-sub">A single <span style="font-family:var(--mono)">/grasp/execute</span> call runs this
+      whole chain. Every arrow between steps is a real ROS topic, service, or action — nothing is hidden inside one process anymore.</p>
+
+    <div class="flow">
+      <div class="step act">
+        <div class="rail"><div class="num">1</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Trigger</div>
+          <p class="st-desc">A one-shot request kicks off the pipeline in the orchestrator.</p>
+          <div class="chan-wrap"><span class="chan ros">/grasp/execute</span></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">2</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Detect the object</div>
+          <p class="st-desc">Run the text-prompted detector on the latest color frame; take the highest-confidence box. Query can come straight from a natural-language instruction via LLM.</p>
+          <div class="chan-wrap"><span class="chan hw">/camera/gripper_camera/color/image_raw</span></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">3</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Localise in 3D</div>
+          <p class="st-desc">Sample depth at the box centroid, back-project through the camera intrinsics to a camera-frame point, then transform to the robot world frame using the live TCP pose × the fixed camera mount.</p>
+          <div class="chan-wrap"><span class="chan hw">/camera/gripper_camera/depth</span><span class="chan ros">/arm/tcp_pose</span></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">4</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Open &amp; approach</div>
+          <p class="st-desc">Open the gripper, then move linearly to a pose above the object, keeping the current tool orientation.</p>
+          <div class="chan-wrap"><span class="chan ros">/gripper/open</span><span class="chan ros">/arm/move_l</span></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">5</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Descend to grasp</div>
+          <p class="st-desc">Drop slowly to just above the object centre — deliberately gentle for safety.</p>
+          <div class="chan-wrap"><span class="chan ros">/arm/move_l <span class="sep">&nbsp;@0.05 m/s</span></span></div>
+        </div>
+      </div>
+      <div class="step act">
+        <div class="rail"><div class="num">6</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">DeliGrasp close</div>
+          <p class="st-desc">Force-controlled close for unknown-stiffness objects: squeeze, check for slip, tighten a little, repeat until held. Feedback and the force log come from <span style="font-family:var(--mono)">/gripper/state</span> — one source of truth.</p>
+          <div class="chan-wrap"><span class="chan hw">/gripper/deligrasp [action]</span></div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">7</div><div class="wire"></div></div>
+        <div class="body">
+          <div class="st-title">Retreat</div>
+          <p class="st-desc">Lift straight back up by the approach height. On any failure along the way: open the gripper and return to the safe pose.</p>
+          <div class="chan-wrap"><span class="chan ros">/arm/move_l</span><span class="chan ros">/arm/move_safe <span class="sep">&nbsp;(on abort)</span></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    ros-integration → main · UR5 CB3 + MAGPIE gripper · ROS 2 Humble · generated for PR review
+  </footer>
+
+</div>

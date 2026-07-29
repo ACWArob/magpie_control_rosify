@@ -1,4 +1,4 @@
-# AutoGrasp ROSification — Technical Procedure
+# ROS 2 Integration — Technical Procedure
 **Platform:** Ubuntu 22.04, ROS 2 Humble  
 **Robot:** UR5 CB3 at `192.168.0.4`  
 **Gripper:** MAGPIE (AX12 Dynamixel motors) on `/dev/ttyACM0` via OpenRB-150  
@@ -12,7 +12,7 @@
 
 ## Background and Motivation
 
-The original AutoGrasp stack was a single monolithic Python script that controlled all hardware directly:
+The original control stack was a single monolithic Python script that controlled all hardware directly:
 - The UR5 arm via `rtde_control` / `rtde_receive` (Universal Robots RTDE library)
 - The MAGPIE gripper via the `Dynamixel SDK` over a serial port
 - The RealSense camera via Intel's `pyrealsense2` SDK
@@ -35,9 +35,9 @@ This architecture worked for single-script experiments but made the system diffi
 Intel RealSense D405 (USB)
         │
         ▼
-realsense2_camera ──────────► /camera/camera/color/image_raw  (sensor_msgs/Image)
-                  ──────────► /camera/camera/depth/image_rect_raw (sensor_msgs/Image)
-                  ──────────► /camera/camera/color/camera_info (sensor_msgs/CameraInfo)
+realsense2_camera ──────────► /camera/gripper_camera/color/image_raw  (sensor_msgs/Image)
+                  ──────────► /camera/gripper_camera/depth/image_rect_raw (sensor_msgs/Image)
+                  ──────────► /camera/gripper_camera/color/camera_info (sensor_msgs/CameraInfo)
 
 MAGPIE Gripper (/dev/ttyACM0)
         │
@@ -57,17 +57,17 @@ ft_sensor_node ────────────► /ft_sensor/wrench  (geome
 UR5 arm (192.168.0.4 TCP:30004 RTDE)
         │
         ▼
-ur5_node ──────────────────► /arm/joint_states  (sensor_msgs/JointState) @ 10 Hz
-         ──────────────────► /arm/tcp_pose  (geometry_msgs/PoseStamped) @ 10 Hz
+ur5_node ──────────────────► /arm/joint_states  (sensor_msgs/JointState) @ 500 Hz
+         ──────────────────► /arm/tcp_pose  (geometry_msgs/PoseStamped) @ 500 Hz
          ◄────────────────── /arm/move_j  (magpie_msgs/MoveJoint)
          ◄────────────────── /arm/move_l  (magpie_msgs/MoveLinear)
          ◄────────────────── /arm/get_pose  (magpie_msgs/GetPose)
          ◄────────────────── /arm/set_speed  (magpie_msgs/SetSpeed)
          ◄────────────────── /arm/move_safe, /arm/stop  (std_srvs/Trigger)
 
-deligrasp_node ◄────────────  /camera/camera/color/image_raw
-               ◄────────────  /camera/camera/depth/image_rect_raw
-               ◄────────────  /camera/camera/color/camera_info
+deligrasp_node ◄────────────  /camera/gripper_camera/color/image_raw
+               ◄────────────  /camera/gripper_camera/depth/image_rect_raw
+               ◄────────────  /camera/gripper_camera/color/camera_info
                ◄────────────  /arm/tcp_pose
                ──── calls ──► /arm/move_l
                ──── calls ──► /gripper/open
@@ -374,7 +374,7 @@ ros2 service call /gripper/set_force \
 
 ### Hardware Overview
 
-The ATI Mini45 is a 6-axis force/torque sensor mounted between the UR5 wrist flange and the MAGPIE gripper. It measures Fx, Fy, Fz (forces in N) and Tx, Ty, Tz (torques in N·m) at the tool attachment point.
+The ATI Mini45 is a 6-axis force/torque sensor that measures Fx, Fy, Fz (forces in N) and Tx, Ty, Tz (torques in N·m). It is a **standalone** sensor read over Ethernet — it is *not* mounted on the UR5 wrist. (The arm's own wrist F/T sensor is a separate OnRobot HEX-E, not yet integrated as a ROS node — see the Day 2 clarification below.)
 
 The sensor connects to an ATI NetFT interface box which provides a 100 Mbps Ethernet connection. The NetFT box runs a UDP server on port 49152 that accepts datagram commands and streams 36-byte measurement packets.
 
@@ -449,8 +449,8 @@ rv    = angle · axis
 ### What the Node Exposes
 
 **Published topics:**
-- `/arm/joint_states` (`sensor_msgs/JointState`) at 10 Hz — joint names follow ROS convention: `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint`
-- `/arm/tcp_pose` (`geometry_msgs/PoseStamped`) at 10 Hz — TCP pose in robot base frame, orientation as quaternion
+- `/arm/joint_states` (`sensor_msgs/JointState`) at up to 500 Hz (configurable via `publish_rate`) — joint names follow ROS convention: `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint`
+- `/arm/tcp_pose` (`geometry_msgs/PoseStamped`) at up to 500 Hz (configurable via `publish_rate`) — TCP pose in robot base frame, orientation as quaternion
 
 **Services:**
 - `/arm/move_j` (`magpie_msgs/MoveJoint`) — joint-space move; `async_mode=true` returns immediately, `false` blocks until complete
@@ -507,7 +507,7 @@ The RealSense D405 publishes depth as a 16-bit unsigned integer image where each
 
 **Stage 3 — Back-projection to camera frame**
 
-Using the pinhole camera model and the intrinsic parameters from `/camera/camera/color/camera_info`:
+Using the pinhole camera model and the intrinsic parameters from `/camera/gripper_camera/color/camera_info`:
 
 ```
 X_cam = (u - cx) · depth_m / fx
@@ -594,7 +594,8 @@ ros2 service call /grasp/execute std_srvs/srv/Trigger {}
 
 # Response:
 # success: True
-# message: 'Grasp complete — final aperture 24.3mm, force 2.1N'
+# message: 'Grasp complete'
+# (grasp progress — detected object, world position, final aperture/force — is logged by the node)
 ```
 
 ---
@@ -616,9 +617,9 @@ deligrasp_node      ← perception + grasp orchestration
 The RealSense camera is launched separately (it uses a different launch file from the `realsense2_camera` package).
 
 ```bash
-# Terminal 1 — camera
+# Terminal 1 — camera (gripper_camera namespace, matches deligrasp_node)
 source /opt/ros/humble/setup.bash
-ros2 launch realsense2_camera rs_launch.py
+ros2 launch realsense2_camera rs_launch.py camera_name:=gripper_camera
 
 # Terminal 2 — full robot stack
 source /opt/ros/humble/setup.bash
@@ -639,15 +640,15 @@ ros2 service call /grasp/execute std_srvs/srv/Trigger {}
 # All nodes running
 ros2 node list
 # Expected: /gripper_node /ft_sensor_node /tactile_sensor_node
-#           /ur5_node /deligrasp_node /camera/camera
+#           /ur5_node /deligrasp_node /camera/gripper_camera
 
 # All topics publishing
 ros2 topic hz /gripper/state                        # ~10 Hz
 ros2 topic hz /ft_sensor/wrench                     # ~50 Hz
-ros2 topic hz /arm/joint_states                     # ~10 Hz
-ros2 topic hz /arm/tcp_pose                         # ~10 Hz
-ros2 topic hz /camera/camera/color/image_raw        # ~10 Hz
-ros2 topic hz /camera/camera/depth/image_rect_raw   # ~10 Hz
+ros2 topic hz /arm/joint_states                     # ~500 Hz
+ros2 topic hz /arm/tcp_pose                         # ~500 Hz
+ros2 topic hz /camera/gripper_camera/color/image_raw        # ~10 Hz
+ros2 topic hz /camera/gripper_camera/depth/image_rect_raw   # ~10 Hz
 
 # Services available
 ros2 service list | grep -E "gripper|arm|ft_sensor|grasp"
@@ -667,7 +668,7 @@ ros2 topic echo /ft_sensor/wrench --once
 | Lab machine | 192.168.0.7 | — | — |
 | UR5 CB3 controller | 192.168.0.4 TCP:30004 | RTDE | `/arm/*` |
 | ATI Mini45 NetFT box | 192.168.0.6 UDP:49152 | NetFT datagram | `/ft_sensor/*` |
-| Intel RealSense D405 | USB 2.1 → `/dev/video0` | UVC (USB Video Class) | `/camera/camera/*` |
+| Intel RealSense D405 | USB 2.1 → `/dev/video0` | UVC (USB Video Class) | `/camera/gripper_camera/*` |
 | MAGPIE gripper (OpenRB-150) | USB → `/dev/ttyACM0` | Dynamixel Protocol 1.0 @ 1 Mbaud | `/gripper/*` |
 
 ---
