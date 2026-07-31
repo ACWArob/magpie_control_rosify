@@ -21,7 +21,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import Pose, PoseStamped
+from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
 from cv_bridge import CvBridge
 
@@ -30,53 +30,13 @@ from magpie_msgs.action import DeliGrasp
 from magpie_msgs.msg import DeliGraspParams
 
 from magpie_control.homog_utils import homog_xform, R_krot
-from magpie_control import poses
+from magpie_control.ros_utils import pose_msg_to_matrix, matrix_to_pose_msg
 
 # TCP-to-camera transform — matches _CAMERA_XFORM in ur5.py
 _TCP_TO_CAM = homog_xform(
     rotnMatx=R_krot([0.0, 0.0, 1.0], -np.pi / 2.0),
     posnVctr=[0.0, 0.0, 0.120],
 )
-
-
-# ── Pose conversion helpers ────────────────────────────────────────────────────
-
-def _axisangle_to_quat(rv):
-    angle = np.linalg.norm(rv)
-    if angle < 1e-10:
-        return (1.0, 0.0, 0.0, 0.0)
-    axis = rv / angle
-    s = np.sin(angle / 2.0)
-    return (np.cos(angle / 2.0), axis[0] * s, axis[1] * s, axis[2] * s)
-
-
-def _quat_to_axisangle(w, x, y, z):
-    angle = 2.0 * np.arccos(np.clip(w, -1.0, 1.0))
-    s = np.sin(angle / 2.0)
-    if s < 1e-10:
-        return np.zeros(3)
-    return angle * np.array([x, y, z]) / s
-
-
-def _pose_msg_to_matrix(pose):
-    rv = _quat_to_axisangle(
-        pose.orientation.w, pose.orientation.x,
-        pose.orientation.y, pose.orientation.z,
-    )
-    return poses.pose_vec_to_mtrx([
-        pose.position.x, pose.position.y, pose.position.z,
-        rv[0], rv[1], rv[2],
-    ])
-
-
-def _matrix_to_pose_msg(matrix):
-    vec = poses.pose_mtrx_to_vec(np.array(matrix))
-    w, x, y, z = _axisangle_to_quat(np.array(vec[3:]))
-    msg = Pose()
-    msg.position.x, msg.position.y, msg.position.z = vec[0], vec[1], vec[2]
-    msg.orientation.w, msg.orientation.x = w, x
-    msg.orientation.y, msg.orientation.z = y, z
-    return msg
 
 
 # ── Node ───────────────────────────────────────────────────────────────────────
@@ -159,7 +119,7 @@ class DeliGraspNode(Node):
         self.camera_info = msg
 
     def _tcp_cb(self, msg):
-        self.tcp_matrix = _pose_msg_to_matrix(msg.pose)
+        self.tcp_matrix = pose_msg_to_matrix(msg.pose)
 
     # ── Perception ─────────────────────────────────────────────────────────────
 
@@ -281,7 +241,7 @@ class DeliGraspNode(Node):
 
     def _move_l(self, matrix, speed=0.10, accel=0.2):
         req = MoveLinear.Request()
-        req.target_pose = _matrix_to_pose_msg(matrix)
+        req.target_pose = matrix_to_pose_msg(matrix)
         req.speed = speed
         req.acceleration = accel
         req.async_mode = False

@@ -13,6 +13,8 @@ from magpie_msgs.srv import MoveJoint, MoveLinear, GetPose, SetSpeed
 
 from magpie_control.ur5 import UR5_Interface
 from magpie_control import poses
+from magpie_control.ros_utils import (
+    pose_msg_to_matrix, matrix_to_pose_msg, pose_vec_to_msg)
 
 # servoJ/servoL defaults — per SDU Robotics RTDE API
 # time: duration each call blocks (s) — match your publish rate (0.002 = 500 Hz)
@@ -31,54 +33,6 @@ _JOINT_NAMES = [
     'wrist_2_joint',
     'wrist_3_joint',
 ]
-
-
-def _axisangle_to_quat(rv):
-    """Convert axis-angle rotation vector to (w, x, y, z) quaternion."""
-    angle = np.linalg.norm(rv)
-    if angle < 1e-10:
-        return (1.0, 0.0, 0.0, 0.0)
-    axis = rv / angle
-    s = np.sin(angle / 2.0)
-    return (np.cos(angle / 2.0), axis[0] * s, axis[1] * s, axis[2] * s)
-
-
-def _quat_to_axisangle(w, x, y, z):
-    """Convert (w, x, y, z) quaternion to axis-angle rotation vector."""
-    angle = 2.0 * np.arccos(np.clip(w, -1.0, 1.0))
-    s = np.sin(angle / 2.0)
-    if s < 1e-10:
-        return np.zeros(3)
-    return angle * np.array([x, y, z]) / s
-
-
-def _pose_msg_to_matrix(pose):
-    """Convert geometry_msgs/Pose to 4x4 homogeneous matrix."""
-    rv = _quat_to_axisangle(
-        pose.orientation.w,
-        pose.orientation.x,
-        pose.orientation.y,
-        pose.orientation.z,
-    )
-    vec = [pose.position.x, pose.position.y, pose.position.z,
-           rv[0], rv[1], rv[2]]
-    return poses.pose_vec_to_mtrx(vec)
-
-
-def _matrix_to_pose_msg(matrix):
-    """Convert 4x4 homogeneous matrix to geometry_msgs/Pose."""
-    from geometry_msgs.msg import Pose
-    vec = poses.pose_mtrx_to_vec(np.array(matrix))
-    w, x, y, z = _axisangle_to_quat(np.array(vec[3:]))
-    msg = Pose()
-    msg.position.x = vec[0]
-    msg.position.y = vec[1]
-    msg.position.z = vec[2]
-    msg.orientation.w = w
-    msg.orientation.x = x
-    msg.orientation.y = y
-    msg.orientation.z = z
-    return msg
 
 
 class UR5Node(Node):
@@ -148,7 +102,8 @@ class UR5Node(Node):
             tcp = PoseStamped()
             tcp.header.stamp = now
             tcp.header.frame_id = 'base'
-            tcp.pose = _matrix_to_pose_msg(self.ur5.get_tcp_pose())
+            # raw 6D RTDE pose straight to a Pose msg — avoids a 6D->4x4->6D round-trip
+            tcp.pose = pose_vec_to_msg(self.ur5.recv.getActualTCPPose())
             self.pub_tcp.publish(tcp)
         except Exception as e:
             self.get_logger().warning(f'Error publishing arm state: {e}')
@@ -196,7 +151,7 @@ class UR5Node(Node):
             self.get_logger().warning('ServoL blocked: teach mode active', throttle_duration_sec=2.0)
             return
         try:
-            matrix = _pose_msg_to_matrix(msg.pose)
+            matrix = pose_msg_to_matrix(msg.pose)
             vec = poses.pose_mtrx_to_vec(np.array(matrix))
             self.ur5.ctrl.servoL(vec, 0.0, 0.0, _SERVO_TIME, _SERVO_LOOKAHEAD, _SERVO_GAIN)
         except Exception as e:
@@ -226,7 +181,7 @@ class UR5Node(Node):
         if self._teach_mode_blocked(response):
             return response
         try:
-            matrix = _pose_msg_to_matrix(request.target_pose)
+            matrix = pose_msg_to_matrix(request.target_pose)
             speed = request.speed if request.speed > 0.0 else self.lin_speed
             accel = request.acceleration if request.acceleration > 0.0 else self.lin_accel
             self.get_logger().info(
@@ -247,7 +202,7 @@ class UR5Node(Node):
     def get_pose_callback(self, request, response):
         """Return current TCP pose and joint angles."""
         try:
-            response.current_pose = _matrix_to_pose_msg(self.ur5.get_tcp_pose())
+            response.current_pose = pose_vec_to_msg(self.ur5.recv.getActualTCPPose())
             response.joint_positions = self.ur5.get_joint_angles().tolist()
             response.success = True
             response.message = 'OK'
