@@ -30,7 +30,9 @@ from magpie_msgs.action import DeliGrasp
 from magpie_msgs.msg import DeliGraspParams
 
 from magpie_control.homog_utils import homog_xform, R_krot
-from magpie_control.ros_utils import pose_msg_to_matrix, matrix_to_pose_msg
+from magpie_control.ros_utils import (
+    pose_msg_to_matrix, matrix_to_pose_msg,
+    pixel_to_camera_point, camera_point_to_world)
 
 # TCP-to-camera transform — matches _CAMERA_XFORM in ur5.py
 _TCP_TO_CAM = homog_xform(
@@ -209,24 +211,6 @@ class DeliGraspNode(Node):
         boxes, labels, scores = self.detector.label(self.color_image, query, confidence)
         return boxes, labels, scores
 
-    # ── Geometry helpers ───────────────────────────────────────────────────────
-
-    def _pixel_to_3d(self, u, v, depth_m):
-        """Back-project pixel (u, v) at depth_m to camera-frame 3D point."""
-        k = self.camera_info.k          # row-major 3x3 intrinsic matrix
-        fx, fy = k[0], k[4]
-        cx, cy = k[2], k[5]
-        return np.array([
-            (u - cx) * depth_m / fx,
-            (v - cy) * depth_m / fy,
-            depth_m,
-        ])
-
-    def _cam_to_world(self, p_cam):
-        """Transform a 3D point from camera frame to robot world frame."""
-        T = self.tcp_matrix @ _TCP_TO_CAM
-        return (T @ np.array([*p_cam, 1.0]))[:3]
-
     # ── Service helpers ────────────────────────────────────────────────────────
 
     def _call(self, client, request, timeout=5.0):
@@ -264,7 +248,15 @@ class DeliGraspNode(Node):
         return response
 
     def _run_grasp_pipeline(self):
-        # Guard: all data must be available
+        """Detect -> localise -> grasp. Each stage is its own method below."""
+        self._check_inputs()
+        query = self._resolve_query()
+        u, v = self._detect_centroid(query)
+        p_world = self._localize(u, v)
+        self._execute_grasp(p_world)
+
+    def _check_inputs(self):
+        """Fail early if any camera/arm topic hasn't produced data yet."""
         for name, val in [('color image', self.color_image),
                           ('depth image', self.depth_image),
                           ('camera info', self.camera_info),
@@ -272,12 +264,9 @@ class DeliGraspNode(Node):
             if val is None:
                 raise RuntimeError(f'No {name} received yet — is the pipeline running?')
 
-        query      = self._resolve_query()
+    def _detect_centroid(self, query):
+        """Run the detector; return the pixel centroid (u, v) of the best box."""
         confidence = self.get_parameter('detection_confidence').value
-        approach_h = self.get_parameter('approach_height').value
-        grasp_off  = self.get_parameter('grasp_z_offset').value
-
-        # ── 1. Detect ──────────────────────────────────────────────────────
         self.get_logger().info(f'Detecting: "{query}"')
         boxes, labels, scores = self._detect(query, confidence)
         if len(boxes) == 0:
@@ -289,8 +278,10 @@ class DeliGraspNode(Node):
         v = int((y1 + y2) / 2)
         self.get_logger().info(
             f'Detected "{labels[best]}" (conf={scores[best]:.2f}) bbox=[{x1},{y1},{x2},{y2}]')
+        return u, v
 
-        # ── 2. 3D localisation ─────────────────────────────────────────────
+    def _localize(self, u, v):
+        """Sample depth at (u, v) and return the object's world-frame position."""
         pad = 5
         roi = self.depth_image[
             max(0, v - pad):v + pad,
@@ -301,34 +292,47 @@ class DeliGraspNode(Node):
             raise RuntimeError('Depth image has no valid pixels at detection centroid')
         depth_m = float(np.median(valid)) / 1000.0   # mm → m
 
-        p_cam   = self._pixel_to_3d(u, v, depth_m)
-        p_world = self._cam_to_world(p_cam)
+        p_cam   = pixel_to_camera_point(u, v, depth_m, self.camera_info.k)
+        p_world = camera_point_to_world(p_cam, self.tcp_matrix, _TCP_TO_CAM)
         self.get_logger().info(
             f'Object world position: x={p_world[0]:.3f} y={p_world[1]:.3f} z={p_world[2]:.3f} m')
+        return p_world
 
-        # ── 3. Open gripper ────────────────────────────────────────────────
+    def _execute_grasp(self, p_world):
+        """Open, approach above the object, descend, DeliGrasp, and retreat."""
+        approach_h = self.get_parameter('approach_height').value
+        grasp_off  = self.get_parameter('grasp_z_offset').value
+
+        # Open gripper
         self.get_logger().info('Opening gripper')
         self._call(self.cli_open, Trigger.Request())
         time.sleep(0.3)
 
-        # ── 4. Move to approach pose ───────────────────────────────────────
-        # Keep current TCP orientation, translate XY to object, Z to approach height
+        # Approach pose: keep TCP orientation, translate XY to object, Z to approach height
         approach = np.array(self.tcp_matrix)
         approach[0, 3] = p_world[0]
         approach[1, 3] = p_world[1]
         approach[2, 3] = p_world[2] + approach_h
-
         self.get_logger().info('Moving to approach pose')
         self._move_l(approach, speed=0.15, accel=0.3)
 
-        # ── 5. Descend to grasp pose ───────────────────────────────────────
+        # Descend to grasp pose
         grasp = approach.copy()
         grasp[2, 3] = p_world[2] + grasp_off
-
         self.get_logger().info('Descending to grasp pose')
         self._move_l(grasp, speed=0.05, accel=0.1)
 
-        # ── 6. DeliGrasp ──────────────────────────────────────────────────
+        # Force-controlled close
+        self._run_deligrasp()
+
+        # Retreat
+        self.get_logger().info('Retreating')
+        retreat = grasp.copy()
+        retreat[2, 3] += approach_h
+        self._move_l(retreat, speed=0.10, accel=0.2)
+
+    def _run_deligrasp(self):
+        """Send the DeliGrasp action goal and wait for the force-controlled close."""
         self.get_logger().info('Executing DeliGrasp')
         params = DeliGraspParams()
         params.goal_aperture    = 30.0
@@ -356,12 +360,6 @@ class DeliGraspNode(Node):
         self.get_logger().info(
             f'Grasped — aperture={result.final_aperture:.1f}mm '
             f'force={result.final_force:.2f}N')
-
-        # ── 7. Retreat ────────────────────────────────────────────────────
-        self.get_logger().info('Retreating')
-        retreat = grasp.copy()
-        retreat[2, 3] += approach_h
-        self._move_l(retreat, speed=0.10, accel=0.2)
 
     def _safe_abort(self):
         """Best-effort safety recovery: open gripper and go to safe pose."""

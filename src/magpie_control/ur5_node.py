@@ -8,6 +8,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger
+from rcl_interfaces.msg import SetParametersResult
 
 from magpie_msgs.srv import MoveJoint, MoveLinear, GetPose, SetSpeed
 
@@ -85,7 +86,23 @@ class UR5Node(Node):
         pub_rate = self.get_parameter('publish_rate').value
         self.timer = self.create_timer(1.0 / pub_rate, self.publish_state)
 
+        # allow publish_rate to be changed at runtime (e.g. `ros2 param set`)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
         self.get_logger().info('UR5 Node initialized')
+
+    def _on_set_parameters(self, params):
+        """Apply runtime parameter changes. Recreates the publish timer when
+        publish_rate changes, so the rate is tunable without restarting."""
+        for p in params:
+            if p.name == 'publish_rate':
+                if p.value <= 0:
+                    return SetParametersResult(
+                        successful=False, reason='publish_rate must be > 0')
+                self.destroy_timer(self.timer)
+                self.timer = self.create_timer(1.0 / p.value, self.publish_state)
+                self.get_logger().info(f'publish_rate set to {p.value} Hz')
+        return SetParametersResult(successful=True)
 
     def publish_state(self):
         """Publish joint states and TCP pose at fixed rate."""

@@ -71,3 +71,29 @@ def matrix_to_pose_msg(matrix):
     """4x4 homogeneous matrix -> geometry_msgs/Pose."""
     vec = poses.pose_mtrx_to_vec(np.array(matrix))
     return pose_vec_to_msg(vec)
+
+
+# ── Camera geometry ────────────────────────────────────────────────────────────
+
+def pixel_to_camera_point(u, v, depth_m, k):
+    """Back-project pixel (u, v) at depth_m metres to a camera-frame 3D point.
+
+    ``k`` is a row-major 3x3 intrinsic matrix (e.g. sensor_msgs/CameraInfo.k).
+    """
+    fx, fy = k[0], k[4]
+    cx, cy = k[2], k[5]
+    return np.array([
+        (u - cx) * depth_m / fx,
+        (v - cy) * depth_m / fy,
+        depth_m,
+    ])
+
+
+def camera_point_to_world(p_cam, tcp_matrix, tcp_to_cam):
+    """Transform a camera-frame 3D point to the robot world frame.
+
+    tcp_matrix: 4x4 world<-TCP transform (from /arm/tcp_pose).
+    tcp_to_cam: 4x4 TCP<-camera-mount transform.
+    """
+    T = np.array(tcp_matrix) @ np.array(tcp_to_cam)
+    return (T @ np.array([*p_cam, 1.0]))[:3]
