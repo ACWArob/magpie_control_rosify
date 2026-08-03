@@ -30,6 +30,8 @@ setup(
             'gripper_node = magpie_control.gripper_node:main',
             'ft_sensor_node = magpie_control.ft_sensor_node:main',
             'tactile_sensor_node = magpie_control.tactile_sensor_node:main',
+            'ur5_node = magpie_control.ur5_node:main',
+            'deligrasp_node = magpie_control.deligrasp_node:main',
         ],
     },
 )

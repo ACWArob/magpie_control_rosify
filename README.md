@@ -53,11 +53,15 @@ Optional sanity check:
 ros2 pkg executables magpie_control
 ```
 
-You should see at least:
+You should see all five nodes:
 
 - `magpie_control gripper_node`
 - `magpie_control ft_sensor_node`
 - `magpie_control tactile_sensor_node`
+- `magpie_control ur5_node`
+- `magpie_control deligrasp_node`
+
+> This README documents the **gripper node** in detail. For how to launch the **arm** (`ur5_node`), **F/T sensor** (`ft_sensor_node`), and **detection + grasp** (`deligrasp_node`) nodes individually, see [`docs/RUNNING.md`](docs/RUNNING.md). For the system architecture and grasp pipeline, see [`PROCEDURE.md`](PROCEDURE.md) and [`docs/ros_integration_overview.html`](docs/ros_integration_overview.html).
 
 ### 2. Run the gripper node
 

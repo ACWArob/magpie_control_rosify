@@ -2,6 +2,7 @@
 Gripper ROS2 Node - Wraps existing Gripper class for ROS control
 """
 
+import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
@@ -74,6 +75,8 @@ class GripperNode(Node):
             Trigger, 'gripper/calibrate', self.calibrate_callback)
         self.srv_reset_parameters = self.create_service(
             Trigger, 'gripper/reset_parameters', self.reset_parameters_callback)
+        self.srv_clear_error = self.create_service(
+            Trigger, 'gripper/clear_error', self.clear_error_callback)
 
         # Create action server for DeliGrasp
         self.action_server = ActionServer(
@@ -85,6 +88,11 @@ class GripperNode(Node):
 
         # Create publisher for gripper state
         self.pub_state = self.create_publisher(GripperState, 'gripper/state', 10)
+
+        # Latest state snapshot — updated by publish_state, read by deligrasp callback
+        self._latest_state = GripperState()
+        self._deligrasp_state_log = []   # [(aperture_mm, force_N), ...]
+        self._collecting_log = False
 
         # Create timer for publishing state
         self.timer = self.create_timer(0.1, self.publish_state)  # 10 Hz
@@ -109,6 +117,9 @@ class GripperNode(Node):
                 self.gripper.get_aperture(finger='left'),
             ]
 
+            self._latest_state = msg
+            if self._collecting_log:
+                self._deligrasp_state_log.append((msg.position, msg.force))
             self.pub_state.publish(msg)
         except Exception as e:
             self.get_logger().warning(f'Error publishing gripper state: {e}')
@@ -171,12 +182,10 @@ class GripperNode(Node):
     def set_force_callback(self, request, response):
         """Service callback to set gripper force limit"""
         try:
-            # Map force in Newtons to torque (simplified mapping)
-            # TODO: Use proper force-to-torque conversion based on gripper geometry
-            torque = int(min(max(request.max_force * 10, 0), 1023))
-
-            self.get_logger().info(f'Setting gripper force limit to {request.max_force:.2f} N (torque={torque})')
-            self.gripper.set_torque(torque)
+            # Gripper.set_force() uses the empirically-calibrated N→load polynomial
+            # (Stephen Otto's thesis, p17). Do not bypass it with a raw linear scaling.
+            self.get_logger().info(f'Setting gripper force limit to {request.max_force:.2f} N')
+            self.gripper.set_force(request.max_force, finger='both')
 
             response.success = True
             response.message = f'Force limit set to {request.max_force:.2f} N'
@@ -191,9 +200,10 @@ class GripperNode(Node):
         """Service callback to calibrate gripper"""
         try:
             self.get_logger().info('Calibrating gripper...')
-            # Open fully then close to reset
+            # Open fully, wait for motion to complete, then close.
+            # spin_once cannot be called inside a callback — it deadlocks.
             self.gripper.open_gripper()
-            rclpy.spin_once(self, timeout_sec=2.0)
+            time.sleep(2.0)
             self.gripper.close_gripper()
 
             response.success = True
@@ -219,6 +229,19 @@ class GripperNode(Node):
 
         return response
 
+    def clear_error_callback(self, request, response):
+        """Re-enable motor torque after an overload/error without resetting all parameters."""
+        try:
+            self.gripper.reset_packet_overload()
+            response.success = True
+            response.message = 'Motor torque re-enabled'
+            self.get_logger().info('Gripper error cleared')
+        except Exception as e:
+            response.success = False
+            response.message = str(e)
+            self.get_logger().error(f'clear_error failed: {e}')
+        return response
+
     async def deligrasp_execute_callback(self, goal_handle):
         """Action callback for DeliGrasp execution"""
         self.get_logger().info('Executing DeliGrasp...')
@@ -227,53 +250,49 @@ class GripperNode(Node):
         feedback_msg = DeliGrasp.Feedback()
 
         try:
-            # Phase 1: Approach - move to goal aperture
+            # Start sampling /gripper/state topic data for the force log
+            self._deligrasp_state_log = []
+            self._collecting_log = True
+
             feedback_msg.phase = 'approach'
-            feedback_msg.current_aperture = params.goal_aperture
-            feedback_msg.current_force = 0.0
+            feedback_msg.current_aperture = self._latest_state.position
+            feedback_msg.current_force = self._latest_state.force
             goal_handle.publish_feedback(feedback_msg)
 
-            self.gripper.set_goal_aperture(
-                params.goal_aperture,
-                finger='both',
-                record_load=False,
-            )
-
-            # Phase 2: Initial close with force control
-            feedback_msg.phase = 'initial_close'
-            goal_handle.publish_feedback(feedback_msg)
-
-            # Use existing DeliGrasp implementation if available
-            if hasattr(self.gripper, 'deligrasp'):
-                final_aperture_mm, final_force_n, _, grasp_log = self.gripper.deligrasp(
+            if hasattr(self.gripper, 'deligrasp_async'):
+                feedback_msg.phase = 'deligrasp'
+                goal_handle.publish_feedback(feedback_msg)
+                await self.gripper.deligrasp_async(
                     x=params.goal_aperture,
                     fc=params.initial_force,
                     dx=params.additional_closure,
                     df=params.additional_force,
                     complete=params.complete_grasp
                 )
-                force_log = [float(entry.get('contact_force', 0.0)) for entry in grasp_log]
             else:
-                # Simple fallback: just close with torque limit
-                self.get_logger().warning('DeliGrasp not available, using simple close')
+                self.get_logger().warning('deligrasp_async not available, using simple close')
                 self.gripper.set_force(params.initial_force, finger='both')
                 self.gripper.close_gripper()
-                final_aperture_mm = self.gripper.get_aperture()
-                final_force_n = params.initial_force
-                force_log = []
 
-            # Return result
+            self._collecting_log = False
+
+            # Final state and log come from /gripper/state topic samples
+            final_aperture_mm = self._latest_state.position
+            final_force_n     = self._latest_state.force
+            force_log         = [f for _, f in self._deligrasp_state_log]
+
             result_msg = DeliGrasp.Result()
             result_msg.success = True
             result_msg.message = 'DeliGrasp completed successfully'
-            result_msg.final_aperture = final_aperture_mm
-            result_msg.final_force = float(final_force_n)
-            result_msg.force_log = force_log
+            result_msg.final_aperture = float(final_aperture_mm)
+            result_msg.final_force    = float(final_force_n)
+            result_msg.force_log      = force_log
 
             goal_handle.succeed()
             return result_msg
 
         except Exception as e:
+            self._collecting_log = False
             self.get_logger().error(f'DeliGrasp failed: {e}')
             result_msg = DeliGrasp.Result()
             result_msg.success = False
@@ -285,8 +304,11 @@ class GripperNode(Node):
         """Clean shutdown"""
         self.get_logger().info('Shutting down Gripper Node...')
         try:
-            # Open gripper before shutdown for safety
             self.gripper.open_gripper()
+        except:
+            pass
+        try:
+            self.gripper.disconnect()
         except:
             pass
         super().destroy_node()

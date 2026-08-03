@@ -48,9 +48,30 @@ def generate_launch_description():
         parameters=[LaunchConfiguration('gripper_config')],
     )
     
+    # UR5 Node
+    ur5_node = Node(
+        package='magpie_control',
+        executable='ur5_node',
+        name='ur5_node',
+        output='screen',
+        parameters=[LaunchConfiguration('gripper_config')],
+    )
+
+    # DeliGrasp Node — expects camera on /camera/gripper_camera namespace
+    # Launch realsense with: ros2 launch realsense2_camera rs_launch.py camera_name:=gripper_camera
+    deligrasp_node = Node(
+        package='magpie_control',
+        executable='deligrasp_node',
+        name='deligrasp_node',
+        output='screen',
+        parameters=[LaunchConfiguration('gripper_config')],
+    )
+
     return LaunchDescription([
         gripper_config_file,
         gripper_node,
         ft_sensor_node,
         tactile_sensor_node,
+        ur5_node,
+        deligrasp_node,
     ])

@@ -1,0 +1,40 @@
+gripper_node:
+  ros__parameters:
+    auto_detect_port: true
+    port: /dev/ttyUSB0        # fallback if auto_detect_port is false
+    use_eflesh: false
+    default_speed: 100        # ~10% speed, ~11 RPM
+    default_torque: 200
+
+ft_sensor_node:
+  ros__parameters:
+    ip_address: "192.168.0.6"
+    port: 49152
+    poll_rate: 50             # Hz; valid: 5, 10, 20, 50, 100, 250, 500
+
+tactile_sensor_node:
+  ros__parameters:
+    enable: false
+    auto_detect_ports: true
+
+deligrasp_node:
+  ros__parameters:
+    object_query: "object"        # text prompt for detector (used when use_llm=false)
+    detection_confidence: 0.3     # minimum detection score (0.0 - 1.0)
+    approach_height: 0.10         # meters above detected object to approach
+    grasp_z_offset: 0.02          # meters, fine descent below approach for grasp
+    initial_force: 1.5            # N, initial DeliGrasp contact force
+    additional_force: 0.2         # N, force increment per slip iteration
+    additional_closure: 1.0       # mm, closure increment per slip iteration
+    detector_type: "grounding_dino"  # "grounding_dino" or "owlvit"
+    use_llm: false                # if true, derive object_query via OpenAI + magpie_prompts
+    llm_instruction: ""           # natural language instruction, e.g. "pick up the water bottle"
+
+ur5_node:
+  ros__parameters:
+    robot_ip: "192.168.0.4"
+    publish_rate: 500           # Hz; RTDE streams at 500 Hz — set lower to reduce CPU load
+    default_linear_speed: 0.25
+    default_linear_accel: 0.5
+    default_joint_speed: 1.05
+    default_joint_accel: 1.4

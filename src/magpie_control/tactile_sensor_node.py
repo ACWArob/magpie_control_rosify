@@ -28,7 +28,7 @@ class TactileSensorNode(Node):
             return
         
         # TODO: Initialize e-flesh sensors
-        self.get_logger().warn('Tactile sensor support not yet implemented')
+        self.get_logger().warning('Tactile sensor support not yet implemented')
         
         # Create publisher for pressure map
         self.pub_pressure = self.create_publisher(
